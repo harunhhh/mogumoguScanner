@@ -53,6 +53,7 @@ async def predict(file: UploadFile = File(...)):
         "calories": _to_jsonable(result["calories"]),
         "portion": _to_jsonable(result["portion"]),
         "full_name": result["full_name"],
+        "determined": result.get("determined", True),
         "top3": [
             {"name": c["name"], "confidence": _to_jsonable(c["confidence"])}
             for c in result.get("top3", [])
