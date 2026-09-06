@@ -11,8 +11,53 @@ function getApiUrl(): string {
   return "http://localhost:8000";
 }
 
+// Renderの無料プランはアクセスが無いとスリープするため、初回アクセスは起動待ちが発生する。
+// 起動待ちと解析待ちは見た目が同じになってしまうので、区別して表示する
+const HEALTH_TIMEOUT_MS = 5_000;
+const WAKE_TIMEOUT_MS = 90_000;
+const PREDICT_TIMEOUT_MS = 45_000;
+const HEALTH_RETRY_MS = 3_000;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 応答するだけでなくモデルの読み込みまで終わっているかを見る。
+// 起動直後は応答しても model_loaded が false のことがある
+async function checkHealth(): Promise<boolean> {
+  try {
+    const res = await fetchWithTimeout(
+      `${getApiUrl()}/health`,
+      { cache: "no-store" },
+      HEALTH_TIMEOUT_MS
+    );
+    if (!res.ok) return false;
+    const data = (await res.json()) as {
+      status?: string;
+      model_loaded?: boolean;
+    };
+    return data.status === "ok" && data.model_loaded === true;
+  } catch {
+    return false;
+  }
+}
+
 type Step = "input" | "result";
 type Tab = "camera" | "upload";
+type ServerStatus = "checking" | "waking" | "ready" | "unreachable";
+type Phase = "waking" | "predicting";
 
 export default function Home() {
   const [step, setStep] = useState<Step>("input");
@@ -25,11 +70,16 @@ export default function Home() {
   const [cameraOn, setCameraOn] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [videoReady, setVideoReady] = useState(false);
+  const [serverStatus, setServerStatus] = useState<ServerStatus>("checking");
+  const [phase, setPhase] = useState<Phase>("predicting");
+  const [elapsed, setElapsed] = useState(0);
 
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  // 実際の起点は待機開始時に effect 側で入れる（描画中に Date.now() を呼ばないため）
+  const waitStartRef = useRef<number>(0);
 
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -39,6 +89,45 @@ export default function Home() {
   };
 
   useEffect(() => stopCamera, []);
+
+  // 画面を開いた時点でバックエンドを起こしにいく。撮影している間に起動が済むので、
+  // 解析ボタンを押してから待たされる時間を短くできる
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const deadline = Date.now() + WAKE_TIMEOUT_MS;
+      while (!cancelled) {
+        if (await checkHealth()) {
+          if (!cancelled) setServerStatus("ready");
+          return;
+        }
+        if (cancelled) return;
+        if (Date.now() > deadline) {
+          setServerStatus("unreachable");
+          return;
+        }
+        setServerStatus("waking");
+        await sleep(HEALTH_RETRY_MS);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 経過秒数を出す。無反応に見えると、起動待ちなのか解析中なのか利用者が判断できない。
+  // 起点は ref に持つ。effect の中で同期的に setState すると余分な再描画が連鎖するため
+  const waiting =
+    loading || serverStatus === "checking" || serverStatus === "waking";
+  useEffect(() => {
+    if (!waiting) return;
+    waitStartRef.current = Date.now();
+    const id = setInterval(
+      () => setElapsed(Math.floor((Date.now() - waitStartRef.current) / 1000)),
+      1000
+    );
+    return () => clearInterval(id);
+  }, [waiting, phase]);
 
   // <video> がマウントされてからストリームを紐付ける（起動直後は videoRef がまだ null なため）
   useEffect(() => {
@@ -117,18 +206,52 @@ export default function Home() {
     setStep("result");
     setLoading(true);
     setError(null);
+    setResult(null);
+    setElapsed(0);
     try {
+      // 起動が済んでいなければ先に待つ。解析リクエストをいきなり投げると
+      // 起動待ちの時間まで「解析中」に見えてしまう
+      if (serverStatus !== "ready") {
+        setPhase("waking");
+        const deadline = Date.now() + WAKE_TIMEOUT_MS;
+        let awake = false;
+        while (Date.now() < deadline) {
+          if (await checkHealth()) {
+            awake = true;
+            break;
+          }
+          await sleep(HEALTH_RETRY_MS);
+        }
+        if (!awake) {
+          setServerStatus("unreachable");
+          setError(
+            "サーバーを起動できませんでした。通信環境を確認して、もう一度お試しください。"
+          );
+          return;
+        }
+        setServerStatus("ready");
+      }
+
+      // 起動待ちから解析に切り替わるので秒数も数え直す
+      setElapsed(0);
+      setPhase("predicting");
       const form = new FormData();
       form.append("file", imgFile);
-      const res = await fetch(`${getApiUrl()}/predict`, {
-        method: "POST",
-        body: form,
-      });
+      const res = await fetchWithTimeout(
+        `${getApiUrl()}/predict`,
+        { method: "POST", body: form },
+        PREDICT_TIMEOUT_MS
+      );
       if (!res.ok) throw new Error("解析に失敗しました。");
       const data: PredictResult = await res.json();
       setResult(data);
-    } catch {
-      setError("解析に失敗しました。もう一度お試しください。");
+    } catch (e) {
+      const timedOut = e instanceof Error && e.name === "AbortError";
+      setError(
+        timedOut
+          ? `解析に${PREDICT_TIMEOUT_MS / 1000}秒以上かかったため中断しました。もう一度お試しください。`
+          : "解析に失敗しました。もう一度お試しください。"
+      );
     } finally {
       setLoading(false);
     }
@@ -151,6 +274,30 @@ export default function Home() {
             <p className="mb-6 text-white/90">
               料理を撮影するか、画像をアップロードしてください。
             </p>
+
+            {/* checking の間は出さない。正常なサーバーでも開くたびに一瞬光ってしまうため */}
+            {(serverStatus === "waking" || serverStatus === "unreachable") && (
+              <div
+                className={`mb-6 rounded-2xl border px-4 py-3 text-sm ${
+                  serverStatus === "unreachable"
+                    ? "border-red-400/40 bg-red-500/15 text-red-200"
+                    : "border-amber-300/40 bg-amber-400/15 text-amber-100"
+                }`}
+              >
+                {serverStatus === "unreachable" ? (
+                  "AIサーバーに接続できませんでした。通信環境を確認してください。"
+                ) : (
+                  <>
+                    <span className="mr-2 inline-block animate-pulse">●</span>
+                    AIサーバーを起動しています…（{elapsed}秒）
+                    <br />
+                    <span className="text-white/70">
+                      初回は1分ほどかかることがあります。この間も撮影はできます。
+                    </span>
+                  </>
+                )}
+              </div>
+            )}
 
             <div className="flex gap-2 mb-4">
               <button
@@ -271,7 +418,22 @@ export default function Home() {
             </h1>
 
             {loading && (
-              <p className="text-white/90 mb-4">AIが栄養素をスキャン中...</p>
+              <div className="mb-4">
+                <p className="text-white/90">
+                  <span className="mr-2 inline-block animate-pulse">●</span>
+                  {phase === "waking"
+                    ? `AIサーバーを起動しています…（${elapsed}秒）`
+                    : `AIが栄養素をスキャン中…（${elapsed}秒）`}
+                </p>
+                <p className="mt-1 text-sm text-white/60">
+                  {phase === "waking"
+                    ? "サーバーがスリープしていたため、起動を待っています。初回は1分ほどかかることがあります。"
+                    : `${PREDICT_TIMEOUT_MS / 1000}秒を超えた場合は自動的に中断します。`}
+                </p>
+                <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                  <div className="h-full w-1/3 animate-pulse rounded-full bg-white/50" />
+                </div>
+              </div>
             )}
 
             {error && (
@@ -300,12 +462,14 @@ export default function Home() {
                 </div>
 
                 <div>
-                  {result.confidence < 10 ? (
+                  {!result.determined ? (
                     <div className="bg-black/75 border-l-4 border-[#ff6b6b] rounded-2xl p-5 mb-4">
                       <b>AI判定:</b>{" "}
                       <span className="text-lg text-[#ff6b6b]">不明</span>
                       <br />
-                      <small>確信度が低いため判定できませんでした</small>
+                      <small>
+                        候補が絞りきれなかったため判定できませんでした。下の候補をご確認ください。
+                      </small>
                     </div>
                   ) : (
                     <div className="bg-black/75 border-l-4 border-[#00ff88] rounded-2xl p-5 mb-4">
@@ -326,9 +490,7 @@ export default function Home() {
                     <span className="block text-base font-normal text-white/70">
                       推定エネルギー
                     </span>
-                    {result.confidence < 10
-                      ? "不明"
-                      : `${result.calories} kcal`}
+                    {!result.determined ? "不明" : `${result.calories} kcal`}
                   </div>
 
                   {result.top3.length > 1 && (
