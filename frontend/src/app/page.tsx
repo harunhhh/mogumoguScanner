@@ -513,17 +513,32 @@ export default function Home() {
                         return (
                           <div
                             key={c.name + i}
-                            className="bg-black/75 rounded-lg px-3 py-2 mt-2 flex justify-between"
+                            className="bg-black/75 rounded-lg px-3 py-2 mt-2 flex items-center justify-between gap-3"
                             style={{ borderLeft: `3px solid ${color}` }}
                           >
-                            <span>
+                            <span className="min-w-0">
                               <span className="text-xs mr-2" style={{ color }}>
                                 {label}
                               </span>
-                              <b>{c.name}</b>
+                              <b className="break-words">{c.name}</b>
+                              {c.portion && c.portion !== "不明" && (
+                                <span className="block text-xs text-white/50">
+                                  {c.portion}あたり
+                                </span>
+                              )}
                             </span>
-                            <span className="text-white/60">
-                              {c.confidence.toFixed(1)}%
+                            <span className="flex shrink-0 items-baseline gap-3 tabular-nums">
+                              {/* 候補にカロリーを含まない旧APIでは表示を省く */}
+                              {c.calories != null && (
+                                <span className="text-white/80">
+                                  {typeof c.calories === "number"
+                                    ? `${c.calories} kcal`
+                                    : c.calories}
+                                </span>
+                              )}
+                              <span className="text-white/60">
+                                {c.confidence.toFixed(1)}%
+                              </span>
                             </span>
                           </div>
                         );
