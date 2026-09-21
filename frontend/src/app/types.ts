@@ -1,6 +1,9 @@
 export type Candidate = {
   name: string;
   confidence: number;
+  // 候補ごとのカロリー。候補にカロリーを含まない旧APIに当たることがあるため任意扱い
+  calories?: number | string;
+  portion?: string;
 };
 
 export type PredictResult = {

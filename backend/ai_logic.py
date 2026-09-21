@@ -111,28 +111,37 @@ class FoodAI:
         trimmed = predictions[:, :n]
         return trimmed / np.maximum(trimmed.sum(axis=1, keepdims=True), 1e-12)
 
-    def _get_top3(self, predictions: np.ndarray) -> list:
-        """上位3候補を返す。"""
-        top3_idx = np.argsort(predictions[0])[::-1][:3]
-        return [
-            {"name": self.class_names[idx], "confidence": float(predictions[0][idx] * 100)}
-            for idx in top3_idx
-        ]
-
-    def _calorie_result(self, name: str, conf_score: float, top3: list) -> dict:
+    def _calorie_fields(self, name: str) -> dict:
+        """カロリー表から該当行を引く。無ければ不明で埋める。"""
         row = self.calorie_by_name.get(name)
         if row is None:
-            return {
-                "name": name, "confidence": conf_score,
-                "calories": "不明", "portion": "不明", "full_name": name,
-                "top3": top3, "determined": True,
-            }
+            return {"calories": "不明", "portion": "不明", "full_name": name}
         return {
-            "name": name,
-            "confidence": conf_score,
             "calories": row["エネルギー (kcal)"],
             "portion": row["目安量"],
             "full_name": row["食品名"],
+        }
+
+    def _get_top3(self, predictions: np.ndarray) -> list:
+        """上位3候補を返す。判定不能のときに利用者が選べるよう、候補にもカロリーを添える。"""
+        top3_idx = np.argsort(predictions[0])[::-1][:3]
+        results = []
+        for idx in top3_idx:
+            name = self.class_names[idx]
+            fields = self._calorie_fields(name)
+            results.append({
+                "name": name,
+                "confidence": float(predictions[0][idx] * 100),
+                "calories": fields["calories"],
+                "portion": fields["portion"],
+            })
+        return results
+
+    def _calorie_result(self, name: str, conf_score: float, top3: list) -> dict:
+        return {
+            "name": name,
+            "confidence": conf_score,
+            **self._calorie_fields(name),
             "top3": top3,
             "determined": True,
         }
