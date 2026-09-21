@@ -1,7 +1,11 @@
 fastapi==0.139.2
 uvicorn[standard]==0.51.0
 python-multipart==0.0.32
-tensorflow==2.16.1
+# GPU用のカーネルを含まないビルド。Renderの無料枠(512MB)で動かすため
+tensorflow-cpu==2.16.1
+# food_model.keras は Keras 3.15.1 で保存されている。これより古いと
+# GlorotUniform の設定を解釈できず、モデルの読み込みに失敗する
+keras==3.15.1
 pillow==10.4.0
 numpy==1.26.4
 pandas==2.2.2
