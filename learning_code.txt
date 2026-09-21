@@ -1,28 +1,30 @@
-# Ensure TensorFlow is installed at the very beginning
+# Google Colab 用 学習コード（GPUランタイムで実行すること）
 !pip install tensorflow
 
 import os
+import json
 import tensorflow as tf
 from tensorflow.keras import layers, models
-from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping 
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 from google.colab import drive
-from tensorflow.keras import regularizers
 
 # 1. セッションの初期化とGoogleドライブのマウント
 tf.keras.backend.clear_session()
 if not os.path.exists('/content/drive'):
     drive.mount('/content/drive')
 
-
 データディレクトリ = '/content/drive/MyDrive/Colab Notebooks/UECFOOD100'
+出力ディレクトリ = '/content/drive/MyDrive/Colab Notebooks'
 
 # 2. クラスIDの自動取得とソート
+#    数字以外の名前のフォルダ（.ipynb_checkpoints など）は key=int が落ちるので除外する
 クラスIDリスト = [d for d in os.listdir(データディレクトリ)
-                 if os.path.isdir(os.path.join(データディレクトリ, d)) and not d.startswith('.')]
+                 if os.path.isdir(os.path.join(データディレクトリ, d)) and d.isdigit()]
 クラスIDリスト = sorted(クラスIDリスト, key=int)
 
 クラス数 = len(クラスIDリスト)
 print(f"ディレクトリ内に合計 {クラス数} 個のクラスを検出しました。")
+print(f"クラスID: {クラスIDリスト}")
 
 # 3. ハイパーパラメータの設定
 画像サイズ = (224, 224)
@@ -52,6 +54,8 @@ print(f"ディレクトリ内に合計 {クラス数} 個のクラスを検出�
 )
 
 # 5. 前処理とパフォーマンス最適化
+#    ここでは 0〜1 に正規化するだけ。MobileNetV2 が必要とする -1〜1 への変換は
+#    モデル内部の Rescaling 層で行う（推論側は 0〜1 を渡すだけでよくなる）
 正規化レイヤー = layers.Rescaling(1./255)
 訓練データ = 訓練データ.map(lambda x, y: (正規化レイヤー(x), y))
 検証データ = 検証データ.map(lambda x, y: (正規化レイヤー(x), y))
@@ -59,72 +63,93 @@ print(f"ディレクトリ内に合計 {クラス数} 個のクラスを検出�
 訓練データ = 訓練データ.prefetch(buffer_size=tf.data.AUTOTUNE)
 検証データ = 検証データ.prefetch(buffer_size=tf.data.AUTOTUNE)
 
-# 6. ファインチューニング用モデルの構築
+# 6. モデルの構築
 print("ベースモデル（MobileNetV2）を読み込み中...")
 ベースモデル = tf.keras.applications.MobileNetV2(
     input_shape=(224, 224, 3),
     include_top=False,
     weights='imagenet'
 )
+ベースモデル.trainable = False  # 第1段階では完全に凍結
 
-# 一旦すべての層を学習可能（True）にする
+# 料理写真は上下が決まっているので回転は控えめにする
+データ拡張 = tf.keras.Sequential([
+    layers.RandomFlip("horizontal"),
+    layers.RandomRotation(0.05),
+    layers.RandomZoom(0.2),
+], name="data_augmentation")
+
+モデル = models.Sequential([
+    layers.Input(shape=(224, 224, 3)),
+    データ拡張,
+    # MobileNetV2 の学習済み重みは -1〜1 の入力を前提としている。
+    # 0〜1 で渡すと事前学習した特徴が本来の性能を出せない。
+    layers.Rescaling(scale=2.0, offset=-1.0),
+    ベースモデル,
+    layers.GlobalAveragePooling2D(),
+    layers.Dropout(0.3),
+    layers.Dense(クラス数, activation='softmax')
+])
+
+# 7. 第1段階：ヘッドのみ学習
+#    ランダム初期化のDense層をいきなり事前学習済み層につなぐと、
+#    最初の大きな勾配が学習済み重みを壊してしまうため先にヘッドを慣らす
+モデル.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+    loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.1),
+    metrics=['accuracy']
+)
+
+print("=== 第1段階：ヘッドのみ学習 ===")
+モデル.fit(訓練データ, validation_data=検証データ, epochs=10)
+
+# 8. 第2段階：上位層のファインチューニング
 ベースモデル.trainable = True
-
-# ただし、最初の100層はロックして保護
 fine_tune_at = 100
 for layer in ベースモデル.layers[:fine_tune_at]:
     layer.trainable = False
 
+# BatchNormalization は解凍しないこと。
+# 解凍すると小さなバッチで移動平均が上書きされ、学習時と推論時で
+# 挙動が食い違って精度が落ちる（転移学習でよくある落とし穴）
+for layer in ベースモデル.layers:
+    if isinstance(layer, layers.BatchNormalization):
+        layer.trainable = False
 
-# データ拡張を少しだけ厳しくする
-データ拡張 = tf.keras.Sequential([
-  layers.RandomFlip("horizontal"),
-  layers.RandomRotation(0.2),
-  layers.RandomZoom(0.2),
-  layers.RandomContrast(0.2), # 明るさのバラつきにも慣れさせる
-])
-
-# 最終的なモデルの組み立て（過学習対策入り）
-モデル = models.Sequential([
-    データ拡張,
-    ベースモデル,
-    layers.GlobalAveragePooling2D(),
-    layers.Dropout(0.6), # ストッパーを強める
-    layers.Dense(クラス数,
-                 activation='softmax',
-                 kernel_regularizer=regularizers.l2(0.001)) # L2ペナルティを追加
-])
-
-# 7. コンパイルと学習の開始
-モデル.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001),
-              loss='categorical_crossentropy',
-              metrics=['accuracy'])
-
-# チェックポイントの設定
-checkpoint_path = '/content/drive/MyDrive/Colab Notebooks/food_model_108_best.keras'
-checkpoint_callback = ModelCheckpoint(
-    filepath=checkpoint_path,
-    monitor='val_accuracy',
-    save_best_only=True,
-    verbose=1
+モデル.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
+    loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.1),
+    metrics=['accuracy']
 )
+モデル.summary()
 
-# 早期終了の設定
-early_stopping = EarlyStopping(
-    monitor='val_accuracy',    # テストの正解率を監視
-    patience=5,                # 5回連続で自己ベストを更新できなかったら強制ストップ
-    restore_best_weights=True, # 最後に一番良かった状態の脳みそに自動で戻す
-    verbose=1
-)
+checkpoint_path = os.path.join(出力ディレクトリ, 'food_model_best.keras')
+コールバック = [
+    ModelCheckpoint(checkpoint_path, monitor='val_accuracy', save_best_only=True, verbose=1),
+    EarlyStopping(monitor='val_accuracy', patience=8, restore_best_weights=True, verbose=1),
+    ReduceLROnPlateau(monitor='val_loss', factor=0.3, patience=3, min_lr=1e-7, verbose=1),
+]
 
+print("=== 第2段階：ファインチューニング ===")
 履歴 = モデル.fit(
     訓練データ,
     validation_data=検証データ,
     epochs=50,
-    callbacks=[checkpoint_callback, early_stopping] 
+    callbacks=コールバック
 )
 
-# 8. 学習済みモデルの保存
-保存パス = '/content/drive/MyDrive/Colab Notebooks/food_model_108_finetuned.keras'
+# 9. 保存
+保存パス = os.path.join(出力ディレクトリ, 'food_model.keras')
 モデル.save(保存パス)
-print(f"全ての学習が完了しました。最終モデルを保存しました: {保存パス}")
+print(f"モデルを保存しました: {保存パス}")
+
+# 学習に使ったクラスIDの並びも必ず一緒に保存する。
+# これを残さなかったために、モデルの出力数(107)と classes.txt の件数(100)が
+# ずれたまま気づけない状態になっていた
+クラスID保存パス = os.path.join(出力ディレクトリ, 'class_ids.txt')
+with open(クラスID保存パス, 'w', encoding='utf-8') as f:
+    f.write('\n'.join(クラスIDリスト))
+
+print(f"クラスIDの並びを保存しました: {クラスID保存パス}")
+print(f"[重要] backend/classes.txt はこの並び通りに {クラス数} 行にしてください。")
+print(f"[重要] backend/food_calories.csv も同じ {クラス数} 行・同じ順序に揃えてください。")

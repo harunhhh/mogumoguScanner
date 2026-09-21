@@ -1,4 +1,5 @@
 # 【重要】料理の画像フォルダを除外（実際のフォルダ名が違ったら書き換えてね）
+# 学習データのほか、モデルのバックアップ(model_backup/)と評価結果(results/)も入る
 data/
 
 
@@ -10,3 +11,10 @@ CLAUDE.md
 
 # 開発用HTTPS自己署名証明書（環境ごとに生成するためコミット不要）
 certs/
+
+# 学習の途中生成物と、手法比較のために作ったモデル。
+# train.py を回せば作り直せる中間ファイルで、1つ26MBあるためコミットしない。
+# 本番で使う backend/food_model.keras と backend/class_ids.txt は追跡対象のまま
+# （アンダースコア付きのファイル名だけが対象になる）
+backend/food_model_*.keras
+backend/class_ids_*.txt
