@@ -9,6 +9,15 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 _INPUT_SIZE = (224, 224)
 
+# TTA用に切り出す前に長辺をここまで縮める。スマホの写真をそのまま扱うと
+# 元解像度の画像を6枚同時に保持することになり、メモリを数百MB使ってしまう。
+# 最小のズーム(0.8)でも512pxが残り、最終的に224pxへ縮めるため精度には影響しない
+_TTA_MAX_SIDE = 640
+
+# TTAの推論を何枚ずつまとめるか。6枚を一度に流すと中間層の出力が同時に確保され、
+# Renderの無料枠(512MB)を超える。分割しても平均する値は変わらないので精度に影響しない
+_TTA_BATCH = 2
+
 
 class FoodAI:
     """料理画像からカロリーを推定するAIクラス。"""
@@ -71,12 +80,20 @@ class FoodAI:
         学習時のデータ拡張がRandomFlip(horizontal)とRandomZoomのみのため、
         それ以外の変換（明るさ・コントラスト・回転）はモデルにとって未知の分布になる。
         """
-        w, h = pil_image.size
+        source = pil_image
+        if max(source.size) > _TTA_MAX_SIDE:
+            scale = _TTA_MAX_SIDE / max(source.size)
+            source = source.resize(
+                (max(int(source.width * scale), 1), max(int(source.height * scale), 1)),
+                Image.BILINEAR,
+            )
+
+        w, h = source.size
         variants = []
         for zoom in (1.0, 0.9, 0.8):
             cw, ch = int(w * zoom), int(h * zoom)
             left, top = (w - cw) // 2, (h - ch) // 2
-            img = pil_image.crop((left, top, left + cw, top + ch))
+            img = source.crop((left, top, left + cw, top + ch))
             variants.append(img)
             variants.append(img.transpose(Image.FLIP_LEFT_RIGHT))
         return variants
@@ -135,9 +152,13 @@ class FoodAI:
 
         if self.USE_TTA:
             aug_images = self._tta_augmentations(pil_image)
-            batch = np.stack([self._preprocess(img) for img in aug_images], axis=0)
-            all_preds = self.model.predict(batch, verbose=0)
-            predictions = np.mean(all_preds, axis=0, keepdims=True)
+            total = None
+            for i in range(0, len(aug_images), _TTA_BATCH):
+                chunk = aug_images[i:i + _TTA_BATCH]
+                batch = np.stack([self._preprocess(img) for img in chunk], axis=0)
+                summed = self.model.predict(batch, verbose=0).sum(axis=0, keepdims=True)
+                total = summed if total is None else total + summed
+            predictions = total / len(aug_images)
         else:
             img_array = np.expand_dims(self._preprocess(pil_image), axis=0)
             predictions = self.model.predict(img_array, verbose=0)

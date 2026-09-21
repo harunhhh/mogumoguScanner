@@ -17,6 +17,8 @@ const HEALTH_TIMEOUT_MS = 5_000;
 const WAKE_TIMEOUT_MS = 90_000;
 const PREDICT_TIMEOUT_MS = 45_000;
 const HEALTH_RETRY_MS = 3_000;
+// APIが determined を返さない場合の代替判定。バックエンド側の閾値と同じ値
+const LEGACY_CONFIDENCE_THRESHOLD = 10;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -244,7 +246,14 @@ export default function Home() {
       );
       if (!res.ok) throw new Error("解析に失敗しました。");
       const data: PredictResult = await res.json();
-      setResult(data);
+      // determined を返さない旧APIに当たることがある。画面とAPIは別々にデプロイ
+      // されるため、片方だけ新しい期間が必ず発生する。値が無いまま扱うと
+      // !undefined が true になり、確信度に関係なく「不明」になってしまう
+      setResult({
+        ...data,
+        determined:
+          data.determined ?? data.confidence >= LEGACY_CONFIDENCE_THRESHOLD,
+      });
     } catch (e) {
       const timedOut = e instanceof Error && e.name === "AbortError";
       setError(
