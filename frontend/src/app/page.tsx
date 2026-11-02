@@ -19,6 +19,8 @@ const PREDICT_TIMEOUT_MS = 45_000;
 const HEALTH_RETRY_MS = 3_000;
 // APIが determined を返さない場合の代替判定。バックエンド側の閾値と同じ値
 const LEGACY_CONFIDENCE_THRESHOLD = 10;
+// APIの content_type チェックと同じ並び
+const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/jpg", "image/webp"];
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -75,6 +77,8 @@ export default function Home() {
   const [serverStatus, setServerStatus] = useState<ServerStatus>("checking");
   const [phase, setPhase] = useState<Phase>("predicting");
   const [elapsed, setElapsed] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -187,9 +191,34 @@ export default function Home() {
   const handleSelectFile = (file: File | undefined) => {
     if (!file) return;
     if (imgPreview) URL.revokeObjectURL(imgPreview);
+    setUploadError(null);
     setImgFile(file);
     setImgPreview(URL.createObjectURL(file));
   };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    if (!ACCEPTED_TYPES.includes(file.type)) {
+      setUploadError("対応していない形式です。JPEG / PNG / WebP を選んでください。");
+      return;
+    }
+    handleSelectFile(file);
+  };
+
+  // 枠の外に落とすとブラウザが画像をそのまま開いてしまい、
+  // 撮影済みの状態が失われる。ページ全体で既定動作を止めておく
+  useEffect(() => {
+    const prevent = (e: DragEvent) => e.preventDefault();
+    window.addEventListener("dragover", prevent);
+    window.addEventListener("drop", prevent);
+    return () => {
+      window.removeEventListener("dragover", prevent);
+      window.removeEventListener("drop", prevent);
+    };
+  }, []);
 
   const handleReset = () => {
     stopCamera();
@@ -200,6 +229,8 @@ export default function Home() {
     setImgPreview(null);
     setResult(null);
     setError(null);
+    setUploadError(null);
+    setIsDragging(false);
     if (uploadInputRef.current) uploadInputRef.current.value = "";
   };
 
@@ -271,7 +302,12 @@ export default function Home() {
       className="min-h-screen bg-cover bg-center bg-fixed flex items-center justify-center py-10 px-4"
       style={{ backgroundImage: "url('/background.png')" }}
     >
-      <div className="w-full max-w-xl rounded-[25px] bg-black/40 backdrop-blur-lg p-8 text-white">
+      <div
+        className={`w-full rounded-[25px] bg-black/40 backdrop-blur-lg p-6 sm:p-8 text-white ${
+          // 結果は画像と判定を2カラムで並べるため、入力画面より広い枠が要る
+          step === "result" ? "max-w-4xl" : "max-w-xl"
+        }`}
+      >
         {step === "input" && (
           <>
             <h1
@@ -381,16 +417,52 @@ export default function Home() {
                 <input
                   ref={uploadInputRef}
                   type="file"
-                  accept="image/jpeg,image/png,image/jpg,image/webp"
+                  accept={ACCEPTED_TYPES.join(",")}
                   className="hidden"
                   onChange={(e) => handleSelectFile(e.target.files?.[0])}
                 />
-                <button
+                <div
+                  role="button"
+                  tabIndex={0}
                   onClick={() => uploadInputRef.current?.click()}
-                  className="w-full py-3 rounded-full font-bold bg-white/10 border border-white/20"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      uploadInputRef.current?.click();
+                    }
+                  }}
+                  onDragEnter={(e) => {
+                    e.preventDefault();
+                    setIsDragging(true);
+                  }}
+                  // preventDefault を呼ばないとブラウザがドロップを受け付けない
+                  onDragOver={(e) => e.preventDefault()}
+                  onDragLeave={(e) => {
+                    // 子要素へ移っただけのときは枠から出ていないので無視する
+                    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                      setIsDragging(false);
+                    }
+                  }}
+                  onDrop={handleDrop}
+                  className={`cursor-pointer rounded-2xl border-2 border-dashed px-4 py-10 text-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${
+                    isDragging
+                      ? "border-white/70 bg-white/20"
+                      : "border-white/25 bg-white/5 hover:bg-white/10"
+                  }`}
                 >
-                  ファイルを選択
-                </button>
+                  <p className="font-bold">
+                    {isDragging
+                      ? "ここに離してください"
+                      : "ここに画像をドラッグ＆ドロップ"}
+                  </p>
+                  <p className="mt-1 text-sm text-white/60">
+                    またはクリックしてファイルを選択
+                  </p>
+                  <p className="mt-2 text-xs text-white/40">JPEG / PNG / WebP</p>
+                </div>
+                {uploadError && (
+                  <p className="mt-2 text-sm text-red-400">{uploadError}</p>
+                )}
               </div>
             )}
 
@@ -483,7 +555,7 @@ export default function Home() {
                   ) : (
                     <div className="bg-black/75 border-l-4 border-[#00ff88] rounded-2xl p-5 mb-4">
                       <b>AI判定:</b>{" "}
-                      <span className="text-lg text-[#00ff88]">
+                      <span className="text-lg text-[#00ff88] sm:whitespace-nowrap">
                         {result.name}
                       </span>
                       <br />
@@ -520,7 +592,7 @@ export default function Home() {
                               <span className="text-xs mr-2" style={{ color }}>
                                 {label}
                               </span>
-                              <b className="break-words">{c.name}</b>
+                              <b className="sm:whitespace-nowrap">{c.name}</b>
                               {c.portion && c.portion !== "不明" && (
                                 <span className="block text-xs text-white/50">
                                   {c.portion}あたり
