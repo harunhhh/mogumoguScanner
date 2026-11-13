@@ -77,8 +77,9 @@ class FoodAI:
     def _tta_augmentations(self, pil_image: Image.Image) -> list:
         """TTA用の拡張画像リストを生成する（中央ズーム3段 × 水平反転の6パターン）。
 
-        学習時のデータ拡張がRandomFlip(horizontal)とRandomZoomのみのため、
-        それ以外の変換（明るさ・コントラスト・回転）はモデルにとって未知の分布になる。
+        学習時のデータ拡張（train.py）は水平反転・回転(0.05)・ズーム(0.2)・
+        コントラスト(0.2)。TTAではそのうち水平反転とズームだけを使う。
+        明るさの変換は学習時に無く、モデルにとって未知の分布になるため入れない。
         """
         source = pil_image
         if max(source.size) > _TTA_MAX_SIDE:
