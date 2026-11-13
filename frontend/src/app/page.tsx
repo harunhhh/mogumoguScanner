@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { PredictResult } from "./types";
+import type { Candidate, PredictResult } from "./types";
 
 // NEXT_PUBLIC_API_URL が未設定の場合、アクセス元ホスト(localhost / LAN IP)に合わせてバックエンドのURLを自動決定する
 function getApiUrl(): string {
@@ -58,6 +58,23 @@ async function checkHealth(): Promise<boolean> {
   }
 }
 
+// 候補のカロリーを表示できるか。旧APIでは候補にカロリーが無く、
+// カロリー表に載っていない料理には "不明" が入る
+function hasCalories(
+  c: Candidate
+): c is Candidate & { calories: number | string } {
+  return c.calories != null && c.calories !== "" && c.calories !== "不明";
+}
+
+function formatCalories(calories: number | string): string {
+  return typeof calories === "number" ? `${calories} kcal` : calories;
+}
+
+// 目安量が意味のある値か。カロリー表に無い料理は "不明"、判定不能時は "-" が入る
+function hasPortion(portion: string | undefined): portion is string {
+  return !!portion && portion !== "不明" && portion !== "-";
+}
+
 type Step = "input" | "result";
 type Tab = "camera" | "upload";
 type ServerStatus = "checking" | "waking" | "ready" | "unreachable";
@@ -79,6 +96,8 @@ export default function Home() {
   const [elapsed, setElapsed] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  // 利用者がTOP3から選んだ候補の番号。null のときはAIの判定をそのまま表示する
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
 
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -228,6 +247,7 @@ export default function Home() {
     setImgFile(null);
     setImgPreview(null);
     setResult(null);
+    setSelectedIndex(null);
     setError(null);
     setUploadError(null);
     setIsDragging(false);
@@ -240,6 +260,8 @@ export default function Home() {
     setLoading(true);
     setError(null);
     setResult(null);
+    // 前の画像で選んだ候補を新しい結果に持ち越さない
+    setSelectedIndex(null);
     setElapsed(0);
     try {
       // 起動が済んでいなければ先に待つ。解析リクエストをいきなり投げると
@@ -296,6 +318,10 @@ export default function Home() {
       setLoading(false);
     }
   };
+
+  // 利用者が選んだ候補。選んでいなければ null でAIの判定を表示する
+  const selected =
+    result && selectedIndex != null ? result.top3[selectedIndex] ?? null : null;
 
   return (
     <main
@@ -543,55 +569,115 @@ export default function Home() {
                 </div>
 
                 <div>
-                  {!result.determined ? (
-                    <div className="bg-black/75 border-l-4 border-[#ff6b6b] rounded-2xl p-5 mb-4">
-                      <b>AI判定:</b>{" "}
-                      <span className="text-lg text-[#ff6b6b]">不明</span>
-                      <br />
-                      <small>
-                        候補が絞りきれなかったため判定できませんでした。下の候補をご確認ください。
-                      </small>
-                    </div>
-                  ) : (
-                    <div className="bg-black/75 border-l-4 border-[#00ff88] rounded-2xl p-5 mb-4">
-                      <b>AI判定:</b>{" "}
-                      <span className="text-lg text-[#00ff88] sm:whitespace-nowrap">
-                        {result.name}
-                      </span>
-                      <br />
-                      <small>確信度: {result.confidence.toFixed(1)}%</small>
-                      <hr className="border-white/20 my-2" />
-                      登録名: {result.full_name}
-                      <br />
-                      目安量: {result.portion}
-                    </div>
-                  )}
+                  {/* 候補を選び直したときに、切り替わった内容を読み上げてもらう */}
+                  <div aria-live="polite">
+                    {selected ? (
+                      <div className="bg-black/75 border-l-4 border-[#00ff88] rounded-2xl p-5 mb-4">
+                        <span className="inline-block rounded-full bg-[#00ff88]/15 px-2 py-0.5 text-xs font-bold text-[#00ff88] mb-2">
+                          ✓ あなたが選択
+                        </span>
+                        <br />
+                        <b>料理名:</b>{" "}
+                        <span className="text-lg text-[#00ff88] sm:whitespace-nowrap">
+                          {selected.name}
+                        </span>
+                        <br />
+                        <small className="text-white/70">
+                          AIの第{(selectedIndex ?? 0) + 1}候補（確信度:{" "}
+                          {selected.confidence.toFixed(1)}%）
+                        </small>
+                        {hasPortion(selected.portion) && (
+                          <>
+                            <hr className="border-white/20 my-2" />
+                            目安量: {selected.portion}
+                          </>
+                        )}
+                      </div>
+                    ) : !result.determined ? (
+                      <div className="bg-black/75 border-l-4 border-[#ff6b6b] rounded-2xl p-5 mb-4">
+                        <b>AI判定:</b>{" "}
+                        <span className="text-lg text-[#ff6b6b]">不明</span>
+                        <br />
+                        <small>
+                          候補が絞りきれなかったため判定できませんでした。
+                          {result.top3.length > 1 &&
+                            "下の候補に当てはまる料理があれば、タップして選んでください。"}
+                        </small>
+                      </div>
+                    ) : (
+                      <div className="bg-black/75 border-l-4 border-[#00ff88] rounded-2xl p-5 mb-4">
+                        <b>AI判定:</b>{" "}
+                        <span className="text-lg text-[#00ff88] sm:whitespace-nowrap">
+                          {result.name}
+                        </span>
+                        <br />
+                        <small>確信度: {result.confidence.toFixed(1)}%</small>
+                        <hr className="border-white/20 my-2" />
+                        登録名: {result.full_name}
+                        <br />
+                        目安量: {result.portion}
+                      </div>
+                    )}
 
-                  <div className="bg-black/80 border border-white/15 rounded-2xl p-5 text-center font-bold text-2xl mb-4">
-                    <span className="block text-base font-normal text-white/70">
-                      推定エネルギー
-                    </span>
-                    {!result.determined ? "不明" : `${result.calories} kcal`}
+                    <div className="bg-black/80 border border-white/15 rounded-2xl p-5 text-center font-bold text-2xl mb-4">
+                      <span className="block text-base font-normal text-white/70">
+                        推定エネルギー
+                      </span>
+                      {selected
+                        ? hasCalories(selected)
+                          ? formatCalories(selected.calories)
+                          : "不明"
+                        : !result.determined
+                          ? "不明"
+                          : `${result.calories} kcal`}
+                      {selected && !hasCalories(selected) && (
+                        <span className="block mt-1 text-sm font-normal text-white/60">
+                          この料理のカロリー情報を取得できませんでした。
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   {result.top3.length > 1 && (
                     <div>
-                      <small className="text-white/60 font-bold">
-                        AIの予測候補 TOP3
-                      </small>
+                      <div className="flex items-baseline justify-between gap-3">
+                        <small className="text-white/60 font-bold">
+                          AIの予測候補 TOP3
+                        </small>
+                        <small className="text-white/50">
+                          タップで料理を選べます
+                        </small>
+                      </div>
                       {result.top3.map((c, i) => {
-                        const color = i === 0 ? "#00ff88" : "#aaaaaa";
+                        const isSelected = selectedIndex === i;
+                        const color =
+                          isSelected || (selectedIndex == null && i === 0)
+                            ? "#00ff88"
+                            : "#aaaaaa";
                         const label = i === 0 ? "第1候補" : `第${i + 1}候補`;
                         return (
-                          <div
+                          <button
+                            type="button"
                             key={c.name + i}
-                            className="bg-black/75 rounded-lg px-3 py-2 mt-2 flex items-center justify-between gap-3"
+                            aria-pressed={isSelected}
+                            // 選択中の候補をもう一度押すと、AIの判定表示に戻す
+                            onClick={() => setSelectedIndex(isSelected ? null : i)}
+                            className={`w-full min-h-12 text-left rounded-lg px-3 py-2 mt-2 flex items-center justify-between gap-3 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${
+                              isSelected
+                                ? "bg-[#00ff88]/15 ring-1 ring-[#00ff88]/70"
+                                : "bg-black/75 hover:bg-white/10"
+                            }`}
                             style={{ borderLeft: `3px solid ${color}` }}
                           >
                             <span className="min-w-0">
                               <span className="text-xs mr-2" style={{ color }}>
                                 {label}
                               </span>
+                              {isSelected && (
+                                <span className="text-xs mr-2 font-bold text-[#00ff88]">
+                                  ✓ 選択中
+                                </span>
+                              )}
                               <b className="sm:whitespace-nowrap">{c.name}</b>
                               {c.portion && c.portion !== "不明" && (
                                 <span className="block text-xs text-white/50">
@@ -603,18 +689,25 @@ export default function Home() {
                               {/* 候補にカロリーを含まない旧APIでは表示を省く */}
                               {c.calories != null && (
                                 <span className="text-white/80">
-                                  {typeof c.calories === "number"
-                                    ? `${c.calories} kcal`
-                                    : c.calories}
+                                  {formatCalories(c.calories)}
                                 </span>
                               )}
                               <span className="text-white/60">
                                 {c.confidence.toFixed(1)}%
                               </span>
                             </span>
-                          </div>
+                          </button>
                         );
                       })}
+                      {selected && (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedIndex(null)}
+                          className="w-full min-h-12 mt-3 rounded-full text-sm font-bold bg-white/5 border border-white/20 hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+                        >
+                          選択を取り消して、AIの判定に戻す
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
