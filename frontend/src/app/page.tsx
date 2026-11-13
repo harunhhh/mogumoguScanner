@@ -424,7 +424,7 @@ export default function Home() {
                           "linear-gradient(135deg, #00dbde 0%, #fc00ff 100%)",
                       }}
                     >
-                      {videoReady ? "📸 撮影する" : "カメラ準備中..."}
+                      {videoReady ? "撮影する" : "カメラ準備中..."}
                     </button>
                     <button
                       onClick={stopCamera}
