@@ -10,6 +10,10 @@
 
 公開URL: https://mogumogu-mauve.vercel.app
 
+![トップ画面](docs/images/top.jpg)
+
+バックエンドは Render の無料プランで動いており、しばらくアクセスがないと停止します。最初の1回は起動に数十秒かかることがあります（画面には「起動待ち」と経過秒数が表示されます）。
+
 ## 主な機能
 
 - 撮影・アップロード：スマホのカメラで撮影、または JPEG / PNG / WebP の画像をアップロード（ドラッグ＆ドロップ可）
@@ -35,6 +39,18 @@
 | 学習環境 | Google Colab |
 | データセット | [UECFOOD100](https://www.kaggle.com/datasets/rkuo2000/uecfood100?resource=download)（100種） |
 | カロリーDB | 自作 CSV（100品目） |
+
+## システム構成
+
+```mermaid
+flowchart LR
+    U["ブラウザ / スマホ"] -->|画面の表示| V["Vercel<br/>Next.js フロントエンド"]
+    U -->|"画像を送信（POST /predict）"| R["Render（Docker）<br/>FastAPI バックエンド"]
+    R --> M["FoodAI（ai_logic.py）<br/>TTA 6パターンで推論"]
+    M --> K["food_model.keras<br/>MobileNetV2 ベースの CNN"]
+    M --> C["food_calories.csv<br/>カロリー・目安量"]
+    R -->|"料理名・確信度・カロリー・TOP3"| U
+```
 
 ## 技術選定の理由
 
@@ -139,7 +155,7 @@ Dense → Softmax（100クラス分類）
 - Food-101 の写真では大きく伸びた：420枚で 48.6% → 81.7%（141勝2敗、McNemar 正確検定 p<0.001）
 - Web収集の実写では伸びなかった：72枚で 59.7% → 55.6%（1勝4敗、p=0.38、有意差なし）。学習に足した5クラス（オムレツ・チャーハン・ラーメン・味噌汁・魚のフライ）の実写15枚に絞っても、正解数は 10枚 対 10枚 で同じだった
 - 分かったこと：足したデータは、それと同じ出どころの写真にしか効かなかった。420枚の伸びは「Food-101 らしい写真に慣れた」分で、実写全般に強くなったわけではない
-- このため v4a / v4b は本番には載せていない（Food-101 の画像の利用条件が未確認であることも理由）
+- このため v4a / v4b は本番には載せていない
 
 ### 開発の終了について
 
@@ -168,6 +184,7 @@ mogumoguScanner/
 │   └── src/app/
 │       ├── page.tsx       # メイン画面（撮影・解析・結果表示・候補の選択）
 │       └── types.ts       # API 応答の型定義
+├── docs/images/           # README 用の画面画像
 ├── train.py               # モデル学習スクリプト（bb_info.txt による切り出し対応）
 ├── learning_code.txt      # 旧版の学習コード（Google Colab 用、フォルダ単位で読み込む方式）
 └── README.md              # このファイル
@@ -259,13 +276,19 @@ python train.py --data-dir ~/datasets/UECFOOD100
 - モデルは対応料理100種のいずれかを必ず出力します。対応していない料理は、確信度や1位と2位の差が基準を下回れば「判定不能」になりますが、そうでなければ別の料理名で表示されます。
 - 学習データ（UECFOOD100）は日本食が中心です。海外のWeb写真で作った評価セット（Food-101）では Top-1 48.6% でした。
 
+## データの出典
+
+- 学習データ：UECFOOD100。配布物の README の依頼に従い、次の論文を出典として記載します
+  - Y. Matsuda and K. Yanai: Multiple-Food Recognition Considering Co-occurrence Employing Manifold Ranking, IAPR International Conference on Pattern Recognition (ICPR), pp.2017-2020 (2012)
+
 ## 開発者・担当
 
 大学の授業（週3コマ×2ヶ月間、4人チーム）で「教師あり学習を用いること」を条件とした開発課題として制作。メンバー全員が日常的にカロリーを気にしていたことから、料理の写真を撮るだけでカロリーが分かるアプリを企画・開発した。
 
 ### 担当箇所
 
-- AIモデルの学習・実装
+- AIモデルの学習・実装（[`train.py`](train.py)、[`backend/ai_logic.py`](backend/ai_logic.py)）
+  - 公開後の精度の検証・改善：候補 TOP3 を選んで確定する機能（[PR #5](https://github.com/harunhhh/mogumoguScanner/pull/5)）、学習し直したモデルへの差し替え（[PR #6](https://github.com/harunhhh/mogumoguScanner/pull/6)）
   - 推論時にTTA（Test-Time Augmentation）を実装し、1枚の画像を6パターン（中央ズーム3段×水平反転）に変換して予測を平均する。変換は学習時のデータ拡張に含まれるものに合わせた
   - 確信度10%未満、または1位と2位の差が3ポイント未満の場合は「判定不能」と表示する
 - リーダー業務
