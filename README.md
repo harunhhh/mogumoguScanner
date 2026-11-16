@@ -12,6 +12,10 @@
 
 ![トップ画面](docs/images/top.jpg)
 
+カツ丼の写真を解析した結果画面です。1位の候補が正解のカツ丼（確信度 72.6%）で、TOP3 の候補とそれぞれのカロリーが並びます。
+
+![解析結果の画面](docs/images/result.jpg)
+
 バックエンドは Render の無料プランで動いており、しばらくアクセスがないと停止します。最初の1回は起動に数十秒かかることがあります（画面には「起動待ち」と経過秒数が表示されます）。
 
 ## 主な機能
@@ -280,6 +284,7 @@ python train.py --data-dir ~/datasets/UECFOOD100
 
 - 学習データ：UECFOOD100。配布物の README の依頼に従い、次の論文を出典として記載します
   - Y. Matsuda and K. Yanai: Multiple-Food Recognition Considering Co-occurrence Employing Manifold Ranking, IAPR International Conference on Pattern Recognition (ICPR), pp.2017-2020 (2012)
+- 結果画面の画像（`docs/images/result.jpg`）に写っている料理の写真：Wikimedia Commons の [File:Katsudon 001.jpg](https://commons.wikimedia.org/wiki/File:Katsudon_001.jpg)（撮影: Ocdp、CC0）
 
 ## 開発者・担当
 
